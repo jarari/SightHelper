@@ -123,6 +123,11 @@ namespace TullFramework {
 		else {
 			zoomDataQueue.clear();
 		}
+
+		typedef void (*FnUpdate)();
+		FnUpdate fn = (FnUpdate)PCUpdateMainThreadOrig;
+		if (fn)
+			(*fn)();
 	}
 
 	class EquipWatcher : public BSTEventSink<TESEquipEvent> {

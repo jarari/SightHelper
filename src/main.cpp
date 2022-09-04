@@ -1,15 +1,16 @@
+#include "MathUtils.h"
+#include "Utilities.h"
 #include <Windows.h>
-#include <thread>
 #include <chrono>
+#include <thread>
 #include <unordered_map>
 #include <vector>
-#include "Utilities.h"
-#include "MathUtils.h"
 using namespace RE;
 using std::unordered_map;
 using std::vector;
 
-bool IsInADS(Actor* a) {
+bool IsInADS(Actor* a)
+{
 	return (a->gunState == 0x8 || a->gunState == 0x6);
 }
 
@@ -24,7 +25,8 @@ const F4SE::TaskInterface* taskInterface;
 const static float offsetX = 0.f;
 const static float offsetZ = 0.f;
 
-namespace TullFramework {
+namespace TullFramework
+{
 	BGSKeyword* supportKeyword;
 	BGSKeyword* sideAimAnimKeyword;
 	bool isInstalled = false;
@@ -37,8 +39,15 @@ namespace TullFramework {
 	static size_t sampleCount = 10;
 	static std::deque<NiPoint3> zoomDataQueue;
 	static NiPoint3 lastZoomData;
+	static bool delayAdjustment = false;
 
-	void AutoCalculateZoomData() {
+	struct TullSwitchAimEvent
+	{
+		int8_t mode;
+	};
+
+	void AutoCalculateZoomData()
+	{
 		if (!p->currentProcess || !p->currentProcess->middleHigh)
 			return;
 
@@ -86,7 +95,8 @@ namespace TullFramework {
 		}
 	}
 
-	void CheckWeaponKeywords() {
+	void CheckWeaponKeywords()
+	{
 		if (p->currentProcess && p->currentProcess->middleHigh) {
 			BSTArray<EquippedItem> equipped = p->currentProcess->middleHigh->equippedItems;
 			if (equipped.size() != 0 && equipped[0].item.instanceData) {
@@ -105,22 +115,35 @@ namespace TullFramework {
 		}
 	}
 
-	void ResetVariables() {
+	void DelayAdjustmentFor(float ms)
+	{
+		delayAdjustment = false;
+		std::thread([ms]() {
+			delayAdjustment = true;
+			int timeout = 0;
+			while (delayAdjustment && timeout < ms) {
+				++timeout;
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+			delayAdjustment = false;
+		}).detach();
+	}
+
+	void ResetVariables()
+	{
 		isWeaponSupported = false;
 		zeroingRequired = false;
 		isSideAiming = false;
+		delayAdjustment = false;
 		lastWeapon = nullptr;
 		zoomDataQueue.clear();
 	}
 
-	void HookedUpdate() {
-		if (isWeaponSupported
-			&& pcam->currentState == pcam->cameraStates[CameraStates::kFirstPerson]
-			&& (p->gunState == 6 || p->gunState == 8)
-			&& *(float*)((uintptr_t)pcam->currentState.get() + 0x78) == 1.f) {
+	void HookedUpdate()
+	{
+		if (isWeaponSupported && !delayAdjustment && pcam->currentState == pcam->cameraStates[CameraStates::kFirstPerson] && (p->gunState == 6 || p->gunState == 8) && *(float*)((uintptr_t)pcam->currentState.get() + 0x78) == 1.f) {
 			AutoCalculateZoomData();
-		}
-		else {
+		} else {
 			zoomDataQueue.clear();
 		}
 
@@ -130,9 +153,11 @@ namespace TullFramework {
 			(*fn)();
 	}
 
-	class EquipWatcher : public BSTEventSink<TESEquipEvent> {
+	class EquipWatcher : public BSTEventSink<TESEquipEvent>
+	{
 	public:
-		virtual BSEventNotifyControl ProcessEvent(const TESEquipEvent& evn, BSTEventSource<TESEquipEvent>* a_source) {
+		virtual BSEventNotifyControl ProcessEvent(const TESEquipEvent& evn, BSTEventSource<TESEquipEvent>* a_source)
+		{
 			if (evn.a == p) {
 				TESForm* item = TESForm::GetFormByID(evn.formId);
 				if (item) {
@@ -140,8 +165,7 @@ namespace TullFramework {
 						if (!lastWeapon && item->formType == ENUM_FORM_ID::kWEAP) {
 							CheckWeaponKeywords();
 						}
-					}
-					else {
+					} else {
 						if (lastWeapon && evn.formId == lastWeapon->formID) {
 							ResetVariables();
 						}
@@ -150,111 +174,80 @@ namespace TullFramework {
 			}
 			return BSEventNotifyControl::kContinue;
 		}
-		F4_HEAP_REDEFINE_NEW(EquipEventSink);
+		F4_HEAP_REDEFINE_NEW(EquipWatcher);
 	};
 
-	class AnimationGraphEventWatcher {
+	class SwitchAimWatcher : public BSTEventSink<TullSwitchAimEvent>
+	{
 	public:
-		typedef BSEventNotifyControl (AnimationGraphEventWatcher::* FnProcessEvent)(BSAnimationGraphEvent& evn, BSTEventSource<BSAnimationGraphEvent>* dispatcher);
-
-		BSEventNotifyControl HookedProcessEvent(BSAnimationGraphEvent& evn, BSTEventSource<BSAnimationGraphEvent>* src) {
-			if (isWeaponSupported && pcam->currentState == pcam->cameraStates[CameraStates::kFirstPerson]) {
-				/*if (evn.animEvent == "sightedStateEnter") {
-					if (zeroingRequired) {
-						std::thread([]() -> void {
-							int timeout = 0;
-							float sightedProgress = 0.f;
-							while ((p->gunState == 6 || p->gunState == 8) && sightedProgress < 1.f && timeout < 10000) {
-								sightedProgress = *(float*)((uintptr_t)pcam->currentState.get() + 0x78);
-								++timeout;
-								std::this_thread::sleep_for(std::chrono::milliseconds(1));
-							}
-							if (sightedProgress == 1.f) {
-								AutoCalculateZoomData();
-								zeroingRequired = false;
-							}
-						}).detach();
-					}
+		virtual BSEventNotifyControl ProcessEvent(const TullSwitchAimEvent& evn, BSTEventSource<TullSwitchAimEvent>* a_source)
+		{
+			if (evn.mode == 0) {
+				if (isSideAiming) {
+					zeroingRequired = true;
+					isSideAiming = false;
+					DelayAdjustmentFor(150);
+					zoomDataQueue.clear();
+					_MESSAGE("(TullFramework) Switched to Normal Aim");
 				}
-				else if (evn.animEvent == "weaponDraw" || evn.animEvent == "FirstPersonInitialized" || evn.animEvent == "PowerFirstPersonInitialized") {*/
-				if (evn.animEvent == "weaponDraw" || evn.animEvent == "FirstPersonInitialized" || evn.animEvent == "PowerFirstPersonInitialized") {
-					BSTArray<EquippedItem> equipped = p->currentProcess->middleHigh->equippedItems;
-					if (equipped.size() != 0 && equipped[0].item.instanceData) {
-						TESObjectWEAP::InstanceData* instance = (TESObjectWEAP::InstanceData*)equipped[0].item.instanceData.get();
-						if (instance && instance->keywords) {
-							if (instance->keywords->HasKeyword(sideAimAnimKeyword, instance)) {
-								if (!isSideAiming) {
-									zeroingRequired = true;
-									isSideAiming = true;
-									_MESSAGE("(TullFramework) Switched to Side Aim");
-								}
-							}
-							else {
-								if (isSideAiming) {
-									zeroingRequired = true;
-									isSideAiming = false;
-									_MESSAGE("(TullFramework) Switched to Normal Aim");
-								}
-							}
-						}
-					}
+			} else if (evn.mode == 1) {
+				if (!isSideAiming) {
+					zeroingRequired = true;
+					isSideAiming = true;
+					DelayAdjustmentFor(150);
+					zoomDataQueue.clear();
+					_MESSAGE("(TullFramework) Switched to Side Aim");
 				}
 			}
-			FnProcessEvent fn = fnHash.at(*(uint64_t*)this);
-			return fn ? (this->*fn)(evn, src) : BSEventNotifyControl::kContinue;
+			return BSEventNotifyControl::kContinue;
 		}
-
-		void HookSink() {
-			uint64_t vtable = *(uint64_t*)this;
-			auto it = fnHash.find(vtable);
-			if (it == fnHash.end()) {
-				FnProcessEvent fn = SafeWrite64Function(vtable + 0x8, &AnimationGraphEventWatcher::HookedProcessEvent);
-				fnHash.insert(std::pair<uint64_t, FnProcessEvent>(vtable, fn));
-			}
-		}
-
-	protected:
-		static unordered_map<uint64_t, FnProcessEvent> fnHash;
+		F4_HEAP_REDEFINE_NEW(SwitchAimWatcher);
 	};
-	unordered_map<uint64_t, AnimationGraphEventWatcher::FnProcessEvent> AnimationGraphEventWatcher::fnHash;
 
-	void CheckTullFrameworkSupport() {
+	void CheckTullFrameworkSupport()
+	{
 		supportKeyword = (BGSKeyword*)GetFormFromMod("Tull_Framework.esp", 0x80F);
 		sideAimAnimKeyword = (BGSKeyword*)GetFormFromMod("Tull_Framework.esp", 0x804);
-		if (supportKeyword && sideAimAnimKeyword) {
+		HMODULE hTULL = GetModuleHandleA("ActorVelocityFramework.dll");
+		typedef BSTEventSource<TullSwitchAimEvent>* (*GetSwitchAimSource)();
+		GetSwitchAimSource fnGetSwitchAimSource = (GetSwitchAimSource)GetProcAddress(hTULL, "GetSwitchAimSource");
+		if (supportKeyword && sideAimAnimKeyword && hTULL && fnGetSwitchAimSource()) {
 			isInstalled = true;
 			EquipWatcher* ew = new EquipWatcher();
 			EquipEventSource::GetSingleton()->RegisterSink(ew);
-			((AnimationGraphEventWatcher*)((uint64_t)p + 0x38))->HookSink();
 			F4SE::Trampoline& trampoline = F4SE::GetTrampoline();
 			PCUpdateMainThreadOrig = trampoline.write_call<5>(ptr_PCUpdateMainThread.address(), &HookedUpdate);
+			SwitchAimWatcher* saw = new SwitchAimWatcher();
+			fnGetSwitchAimSource()->RegisterSink(saw);
 			_MESSAGE("(TullFramework) TullFramework found.");
 		}
 	}
 }
 
-void PrintConsole(const char* c) {
+void PrintConsole(const char* c)
+{
 	clog->AddString("(Sight Helper) ");
 	clog->AddString(c);
 	clog->AddString("\n");
 }
 
-void GetEquippedWeaponMods(TESObjectWEAP* currwep) {
+void GetEquippedWeaponMods(TESObjectWEAP* currwep)
+{
 	if (!p->inventoryList) {
 		return;
 	}
 	for (auto invitem = p->inventoryList->data.begin(); invitem != p->inventoryList->data.end(); ++invitem) {
 		if (invitem->object->formType == ENUM_FORM_ID::kWEAP) {
-			TESObjectWEAP* wep = (TESObjectWEAP * )(invitem->object);
+			TESObjectWEAP* wep = (TESObjectWEAP*)(invitem->object);
 			if (invitem->stackData->IsEquipped() && wep == currwep) {
 				if (invitem->stackData->extra) {
-					BGSObjectInstanceExtra* extraData = (BGSObjectInstanceExtra * )invitem->stackData->extra->GetByType(EXTRA_DATA_TYPE::kObjectInstance);
+					BGSObjectInstanceExtra* extraData = (BGSObjectInstanceExtra*)invitem->stackData->extra->GetByType(EXTRA_DATA_TYPE::kObjectInstance);
 					if (extraData) {
 						auto data = extraData->values;
 						if (data && data->buffer) {
 							uintptr_t buf = (uintptr_t)(data->buffer);
 							for (uint32_t i = 0; i < data->size / 0x8; i++) {
-								BGSMod::Attachment::Mod* omod = (BGSMod::Attachment::Mod * )TESForm::GetFormByID(*(uint32_t*)(buf + i * 0x8));
+								BGSMod::Attachment::Mod* omod = (BGSMod::Attachment::Mod*)TESForm::GetFormByID(*(uint32_t*)(buf + i * 0x8));
 								_MESSAGE("Mod : %s (0x%04x)", omod->fullName.c_str(), omod->formID);
 								//_MESSAGE("Model : %s", omod->model.c_str());
 							}
@@ -266,7 +259,8 @@ void GetEquippedWeaponMods(TESObjectWEAP* currwep) {
 	}
 }
 
-void PrintCalculatedZoomData(float x, float z) {
+void PrintCalculatedZoomData(float x, float z)
+{
 	NiPoint3 zoomData = NiPoint3();
 	if (p->currentProcess && p->currentProcess->middleHigh) {
 		BSTArray<EquippedItem> equipped = p->currentProcess->middleHigh->equippedItems;
@@ -291,11 +285,11 @@ void PrintCalculatedZoomData(float x, float z) {
 	PrintConsole(consolebuf);
 }
 
-void CalculateZoomData() {
+void CalculateZoomData()
+{
 	if (TullFramework::isInstalled && TullFramework::isWeaponSupported) {
 		PrintCalculatedZoomData(TullFramework::lastZoomData.x, TullFramework::lastZoomData.z);
-	}
-	else {
+	} else {
 		NiNode* node = (NiNode*)p->Get3D(true);
 		if (node) {
 			NiNode* helper = nullptr;
@@ -319,15 +313,15 @@ void CalculateZoomData() {
 				float z = diff.y + offsetZ;
 				lastCalculated = NiPoint3(x, 0, z);
 				PrintCalculatedZoomData(x, z);
-			}
-			else {
+			} else {
 				PrintConsole("Helper node not found.");
 			}
 		}
 	}
 }
 
-void ApplyZoomData() {
+void ApplyZoomData()
+{
 	bool zoomDataFound = false;
 	if (p->currentProcess && p->currentProcess->middleHigh) {
 		BSTArray<EquippedItem> equipped = p->currentProcess->middleHigh->equippedItems;
@@ -345,7 +339,8 @@ void ApplyZoomData() {
 	}
 }
 
-void PrintWeaponAddress() {
+void PrintWeaponAddress()
+{
 	if (p->currentProcess && p->currentProcess->middleHigh) {
 		BSTArray<EquippedItem> equipped = p->currentProcess->middleHigh->equippedItems;
 		if (equipped.size() != 0 && equipped[0].item.instanceData) {
@@ -360,11 +355,13 @@ void PrintWeaponAddress() {
 	}
 }
 
-class SightHelperInputHandler : public BSInputEventReceiver {
+class SightHelperInputHandler : public BSInputEventReceiver
+{
 public:
-	typedef void (SightHelperInputHandler::* FnPerformInputProcessing)(const InputEvent* a_queueHead);
+	typedef void (SightHelperInputHandler::*FnPerformInputProcessing)(const InputEvent* a_queueHead);
 
-	void HandleMultipleButtonEvent(const ButtonEvent* evn) {
+	void HandleMultipleButtonEvent(const ButtonEvent* evn)
+	{
 		if (evn->eventType != INPUT_EVENT_TYPE::kButton) {
 			if (evn->next)
 				HandleMultipleButtonEvent((ButtonEvent*)evn->next);
@@ -380,15 +377,12 @@ public:
 			if (id == 0x6D) {
 				if (IsInADS(p)) {
 					CalculateZoomData();
-				}
-				else {
+				} else {
 					PrintConsole("You must ADS first.");
 				}
-			}
-			else if (id == 0x6B) {
+			} else if (id == 0x6B) {
 				ApplyZoomData();
-			}
-			else if (id == 0x69) {
+			} else if (id == 0x69) {
 				PrintWeaponAddress();
 			}
 			/*else if (id == 0x68) {
@@ -403,7 +397,8 @@ public:
 			HandleMultipleButtonEvent((ButtonEvent*)evn->next);
 	}
 
-	void HookedPerformInputProcessing(const InputEvent* a_queueHead) {
+	void HookedPerformInputProcessing(const InputEvent* a_queueHead)
+	{
 		if (a_queueHead) {
 			HandleMultipleButtonEvent((ButtonEvent*)a_queueHead);
 		}
@@ -413,7 +408,8 @@ public:
 		}
 	}
 
-	void HookSink() {
+	void HookSink()
+	{
 		uint64_t vtable = *(uint64_t*)this;
 		auto it = fnHash.find(vtable);
 		if (it == fnHash.end()) {
@@ -427,7 +423,8 @@ protected:
 };
 unordered_map<uint64_t, SightHelperInputHandler::FnPerformInputProcessing> SightHelperInputHandler::fnHash;
 
-void InitializePlugin() {
+void InitializePlugin()
+{
 	p = PlayerCharacter::GetSingleton();
 	pcam = PlayerCamera::GetSingleton();
 	((SightHelperInputHandler*)((uint64_t)pcam + 0x38))->HookSink();
@@ -493,15 +490,12 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f
 	message->RegisterListener([](F4SE::MessagingInterface::Message* msg) -> void {
 		if (msg->type == F4SE::MessagingInterface::kGameDataReady) {
 			InitializePlugin();
-		}
-		else if (TullFramework::isInstalled) {
+		} else if (TullFramework::isInstalled) {
 			if (msg->type == F4SE::MessagingInterface::kPreLoadGame) {
 				TullFramework::ResetVariables();
-			}
-			else if (msg->type == F4SE::MessagingInterface::kPostLoadGame) {
+			} else if (msg->type == F4SE::MessagingInterface::kPostLoadGame) {
 				TullFramework::CheckWeaponKeywords();
-			}
-			else if (msg->type == F4SE::MessagingInterface::kNewGame) {
+			} else if (msg->type == F4SE::MessagingInterface::kNewGame) {
 				TullFramework::ResetVariables();
 			}
 		}

@@ -11,7 +11,7 @@ using std::vector;
 
 bool IsInADS(Actor* a)
 {
-	return (a->gunState == 0x8 || a->gunState == 0x6);
+	return (a->gunState == (GUN_STATE)0x8 || a->gunState == (GUN_STATE)0x6);
 }
 
 PlayerCharacter* p;
@@ -51,6 +51,9 @@ namespace TullFramework
 		if (!p->currentProcess || !p->currentProcess->middleHigh)
 			return;
 
+		if (*(float*)((uintptr_t)pcam->cameraStates[CameraState::kFirstPerson].get() + 0x78) <= 0.95f)
+			return;
+
 		NiNode* node = (NiNode*)p->Get3D(true);
 		if (node) {
 			NiNode* helper = nullptr;
@@ -62,8 +65,6 @@ namespace TullFramework
 			NiNode* camera = (NiNode*)node->GetObjectByName("Camera");
 			bhkCharacterController* con = p->currentProcess->middleHigh->charController.get();
 			if (helper && camera && con) {
-				NiPoint3 pos, dir;
-				p->GetEyeVector(pos, dir, true);
 				float actorScale = GetActorScale(p);
 				NiPoint3 diff = (helper->world.translate - camera->world.translate) / actorScale;
 				diff = camera->world.rotate * diff;
@@ -78,17 +79,20 @@ namespace TullFramework
 						if (zoomDataQueue.size() > sampleCount) {
 							zoomDataQueue.pop_front();
 						}
-						float avgX = 0.f;
-						float avgZ = 0.f;
-						for (auto it = zoomDataQueue.begin(); it != zoomDataQueue.end(); ++it) {
-							avgX += it->x;
-							avgZ += it->z;
-						}
-						avgX /= zoomDataQueue.size();
-						avgZ /= zoomDataQueue.size();
 
-						instance->zoomData->zoomData.cameraOffset.x += (avgX - instance->zoomData->zoomData.cameraOffset.x) / 3.f;
-						instance->zoomData->zoomData.cameraOffset.z += (avgZ - instance->zoomData->zoomData.cameraOffset.z) / 3.f;
+						if (zoomDataQueue.size() == sampleCount) {
+							float avgX = 0.f;
+							float avgZ = 0.f;
+							for (auto it = zoomDataQueue.begin(); it != zoomDataQueue.end(); ++it) {
+								avgX += it->x;
+								avgZ += it->z;
+							}
+							avgX /= zoomDataQueue.size();
+							avgZ /= zoomDataQueue.size();
+
+							instance->zoomData->zoomData.cameraOffset.x += min(max((avgX - instance->zoomData->zoomData.cameraOffset.x) / 6.f, -0.1f), 0.1f);
+							instance->zoomData->zoomData.cameraOffset.z += min(max((avgZ - instance->zoomData->zoomData.cameraOffset.z) / 6.f, -0.1f), 0.1f);
+						}
 					}
 				}
 			}
@@ -141,10 +145,12 @@ namespace TullFramework
 
 	void HookedUpdate()
 	{
-		if (isWeaponSupported && !delayAdjustment && pcam->currentState == pcam->cameraStates[CameraStates::kFirstPerson] && (p->gunState == 6 || p->gunState == 8) && *(float*)((uintptr_t)pcam->currentState.get() + 0x78) == 1.f) {
+		if (isWeaponSupported && !delayAdjustment && pcam->currentState == pcam->cameraStates[CameraStates::kFirstPerson] && IsInADS(p) && *(float*)((uintptr_t)pcam->currentState.get() + 0x78) == 1.f) {
 			AutoCalculateZoomData();
 		} else {
-			zoomDataQueue.clear();
+			if (zoomDataQueue.size() > 0) {
+				zoomDataQueue.clear();
+			}
 		}
 
 		typedef void (*FnUpdate)();
@@ -208,7 +214,7 @@ namespace TullFramework
 	{
 		supportKeyword = (BGSKeyword*)GetFormFromMod("Tull_Framework.esp", 0x80F);
 		sideAimAnimKeyword = (BGSKeyword*)GetFormFromMod("Tull_Framework.esp", 0x804);
-		HMODULE hTULL = GetModuleHandleA("ActorVelocityFramework.dll");
+		HMODULE hTULL = GetModuleHandleA("TullFramework.dll");
 		typedef BSTEventSource<TullSwitchAimEvent>* (*GetSwitchAimSource)();
 		GetSwitchAimSource fnGetSwitchAimSource = (GetSwitchAimSource)GetProcAddress(hTULL, "GetSwitchAimSource");
 		if (supportKeyword && sideAimAnimKeyword && hTULL && fnGetSwitchAimSource()) {
